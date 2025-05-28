@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -71,10 +72,19 @@ func parseRequestPath(request string) string {
 
 // routeRequest는 경로에 따라 적절한 HTTP 응답을 반환합니다
 func routeRequest(path string) string {
-	switch path {
-	case "/":
+	switch {
+	case path == "/":
 		return "HTTP/1.1 200 OK\r\n\r\n"
+	case strings.HasPrefix(path, "/echo/"):
+		str := path[6:]
+		return responseEcho(str)
 	default:
 		return "HTTP/1.1 404 Not Found\r\n\r\n"
 	}
+}
+
+func responseEcho(str string) string {
+	contentLength := len(str)
+	return fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %s\r\n\r\n%s",
+		strconv.Itoa(contentLength), str)
 }
