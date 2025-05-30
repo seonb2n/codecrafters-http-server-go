@@ -111,8 +111,29 @@ func parseUserAgent(request string) string {
 	return headers["user-agent"]
 }
 
+func parseRequestMethod(request string) string {
+	lines := strings.Split(request, "\r\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	parts := strings.Split(lines[0], " ")
+	if len(parts) < 1 {
+		return ""
+	}
+	return parts[0]
+}
+
+func parseRequestBody(request string) string {
+	bodyStart := strings.Index(request, "\r\n\r\n")
+	if bodyStart == -1 {
+		return ""
+	}
+	return request[bodyStart+4:]
+}
+
 // routeRequest는 경로에 따라 적절한 HTTP 응답을 반환합니다
 func routeRequest(request string) string {
+	method := parseRequestMethod(request)
 	path := parseRequestPath(request)
 
 	switch {
@@ -126,7 +147,7 @@ func routeRequest(request string) string {
 		return responseUserAgent(userAgent)
 	case strings.HasPrefix(path, "/files"):
 		filename := path[7:]
-		return responseFile(filename)
+		return responseFile(filename, method, request)
 	default:
 		return "HTTP/1.1 404 Not Found\r\n\r\n"
 	}
@@ -144,23 +165,44 @@ func responseUserAgent(userAgent string) string {
 		contentLength, userAgent)
 }
 
-func responseFile(filename string) string {
-	// 디렉토리가 설정되지 않은 경우
+func responseFile(filename string, method string, request string) string {
+	if method == "GET" {
+		return responseFileGet(filename)
+	} else if method == "POST" {
+		body := parseRequestBody(request)
+		return responseFilePost(filename, body)
+	}
+	return ""
+}
+
+func responseFileGet(filename string) string {
 	if filesDirectory == "" {
 		return "HTTP/1.1 404 Not Found\r\n\r\n"
 	}
 
-	// 파일 경로 생성
 	filePath := filepath.Join(filesDirectory, filename)
 
-	// 파일 읽기
 	fileContent, err := os.ReadFile(filePath)
 	if err != nil {
 		return "HTTP/1.1 404 Not Found\r\n\r\n"
 	}
 
-	// 성공적으로 파일을 읽은 경우
 	contentLength := len(fileContent)
 	return fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s",
 		contentLength, string(fileContent))
+}
+
+func responseFilePost(filename string, body string) string {
+	if filesDirectory == "" {
+		return "HTTP/1.1 404 Not Found\r\n\r\n"
+	}
+
+	filePath := filepath.Join(filesDirectory, filename)
+
+	err := os.WriteFile(filePath, []byte(body), 0644)
+	if err != nil {
+		fmt.Printf("Error writing file: %v\n", err)
+		return "HTTP/1.1 500 Internal Server Error\r\n\r\n"
+	}
+	return "HTTP/1.1 201 Created\r\n\r\n"
 }
