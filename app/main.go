@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"net"
 	"os"
@@ -165,6 +167,21 @@ func supportsGzip(headers map[string]string) bool {
 	return false
 }
 
+func compressGzip(data string) ([]byte, error) {
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	_, err := writer.Write([]byte(data))
+	if err != nil {
+		return nil, err
+	}
+	err = writer.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 func handleResponse(statusCode int, contentType ContentType, body string, useGzip bool) string {
 	var status string
 	switch statusCode {
@@ -182,20 +199,27 @@ func handleResponse(statusCode int, contentType ContentType, body string, useGzi
 
 	// 헤더 구성
 	var headers []string
+	var responseBody string
 
 	if useGzip && body != "" {
-		// 나중에 실제 압축 구현 시 여기서 body를 압축
-		// compressedBody := compressGzip(body)
-		// body = compressedBody
-		headers = append(headers, "Content-Encoding: gzip")
+		compressedData, err := compressGzip(body)
+		if err != nil {
+			fmt.Println("Error compressing data: ", err.Error())
+			responseBody = body
+		} else {
+			responseBody = string(compressedData)
+			headers = append(headers, "Content-Encoding: gzip")
+		}
+	} else {
+		responseBody = body
 	}
 
 	if contentType != ContentTypeNone {
 		headers = append(headers, fmt.Sprintf("Content-Type: %s", contentType.String()))
 	}
 
-	if body != "" {
-		headers = append(headers, fmt.Sprintf("Content-Length: %d", len(body)))
+	if responseBody != "" {
+		headers = append(headers, fmt.Sprintf("Content-Length: %d", len(responseBody)))
 	}
 
 	// 응답 구성
@@ -205,8 +229,8 @@ func handleResponse(statusCode int, contentType ContentType, body string, useGzi
 	}
 	response += "\r\n"
 
-	if body != "" {
-		response += body
+	if responseBody != "" {
+		response += responseBody
 	}
 
 	return response
