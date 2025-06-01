@@ -78,6 +78,7 @@ func parseCommandLineArgs() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
+
 	for {
 		buffer := make([]byte, 1024)
 		n, err := conn.Read(buffer)
@@ -94,11 +95,14 @@ func handleConnection(conn net.Conn) {
 		}
 
 		// Connection: close 헤더 확인
-		headers := parseHeaders(request)
-		connectionHeader := strings.ToLower(headers["connection"])
-		shouldClose := connectionHeader == "close"
+		shouldClose := shouldCloseConnection(request)
 
 		response := routeRequest(request)
+
+		// Connection: close 헤더가 있으면 응답에 추가
+		if shouldClose {
+			response = addConnectionCloseHeader(response)
+		}
 
 		// 응답 전송
 		_, err = conn.Write([]byte(response))
@@ -107,10 +111,33 @@ func handleConnection(conn net.Conn) {
 		}
 
 		// Connection: close가 있거나 HTTP/1.0인 경우 연결 종료
-		if shouldClose || isHTTP10(request) {
+		if shouldClose {
 			break
 		}
 	}
+}
+
+func shouldCloseConnection(request string) bool {
+	headers := parseHeaders(request)
+	connectionHeader := strings.ToLower(headers["connection"])
+	return connectionHeader == "close" || isHTTP10(request)
+}
+
+// addConnectionCloseHeader는 응답에 Connection: close 헤더를 추가합니다
+func addConnectionCloseHeader(response string) string {
+	// HTTP 상태 라인과 헤더들을 분리
+	parts := strings.Split(response, "\r\n\r\n")
+	if len(parts) < 2 {
+		return response
+	}
+
+	headerPart := parts[0]
+	bodyPart := parts[1]
+
+	// Connection: close 헤더 추가
+	headerPart += "\r\nConnection: close"
+
+	return headerPart + "\r\n\r\n" + bodyPart
 }
 
 func isHTTP10(request string) bool {
