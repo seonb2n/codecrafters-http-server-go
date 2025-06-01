@@ -78,24 +78,53 @@ func parseCommandLineArgs() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
+	for {
+		buffer := make([]byte, 1024)
+		n, err := conn.Read(buffer)
+		if err != nil {
+			// 연결이 닫혔거나 에러가 발생한 경우 루프 종료
+			break
+		}
 
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading request:", err.Error())
-		return
+		request := string(buffer[:n])
+
+		// 빈 요청인 경우 건너뛰기
+		if strings.TrimSpace(request) == "" {
+			continue
+		}
+
+		// Connection: close 헤더 확인
+		headers := parseHeaders(request)
+		connectionHeader := strings.ToLower(headers["connection"])
+		shouldClose := connectionHeader == "close"
+
+		response := routeRequest(request)
+
+		// 응답 전송
+		_, err = conn.Write([]byte(response))
+		if err != nil {
+			break
+		}
+
+		// Connection: close가 있거나 HTTP/1.0인 경우 연결 종료
+		if shouldClose || isHTTP10(request) {
+			break
+		}
+	}
+}
+
+func isHTTP10(request string) bool {
+	lines := strings.Split(request, "\r\n")
+	if len(lines) == 0 {
+		return false
 	}
 
-	request := string(buffer[:n])
-
-	response := routeRequest(request)
-
-	// 응답 전송
-	_, err = conn.Write([]byte(response))
-	if err != nil {
-		fmt.Println("Error writing response:", err.Error())
-		return
+	parts := strings.Split(lines[0], " ")
+	if len(parts) < 3 {
+		return false
 	}
+
+	return parts[2] == "HTTP/1.0"
 }
 
 func parseRequestPath(request string) string {
