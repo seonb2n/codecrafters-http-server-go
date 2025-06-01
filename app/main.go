@@ -5,9 +5,33 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
+
+type ContentType int
+
+const (
+	ContentTypeNone ContentType = iota
+	ContentTypeTextPlain
+	ContentTypeApplicationOctetStream
+	ContentTypeApplicationJSON
+	ContentTypeTextHTML
+)
+
+func (ct ContentType) String() string {
+	switch ct {
+	case ContentTypeTextPlain:
+		return "text/plain"
+	case ContentTypeApplicationOctetStream:
+		return "application/octet-stream"
+	case ContentTypeApplicationJSON:
+		return "application/json"
+	case ContentTypeTextHTML:
+		return "text/html"
+	default:
+		return ""
+	}
+}
 
 var _ = net.Listen
 var _ = os.Exit
@@ -106,11 +130,6 @@ func parseHeaders(request string) map[string]string {
 	return headers
 }
 
-func parseUserAgent(request string) string {
-	headers := parseHeaders(request)
-	return headers["user-agent"]
-}
-
 func parseRequestMethod(request string) string {
 	lines := strings.Split(request, "\r\n")
 	if len(lines) == 0 {
@@ -131,70 +150,123 @@ func parseRequestBody(request string) string {
 	return request[bodyStart+4:]
 }
 
+func supportsGzip(headers map[string]string) bool {
+	acceptEncoding := headers["accept-encoding"]
+	if acceptEncoding == "" {
+		return false
+	}
+
+	encodings := strings.Split(acceptEncoding, ",")
+	for _, encoding := range encodings {
+		if strings.TrimSpace(encoding) == "gzip" {
+			return true
+		}
+	}
+	return false
+}
+
+func handleResponse(statusCode int, contentType ContentType, body string, useGzip bool) string {
+	var status string
+	switch statusCode {
+	case 200:
+		status = "HTTP/1.1 200 OK"
+	case 201:
+		status = "HTTP/1.1 201 Created"
+	case 404:
+		status = "HTTP/1.1 404 Not Found"
+	case 500:
+		status = "HTTP/1.1 500 Internal Server Error"
+	default:
+		status = "HTTP/1.1 200 OK"
+	}
+
+	// 헤더 구성
+	var headers []string
+
+	if useGzip && body != "" {
+		// 나중에 실제 압축 구현 시 여기서 body를 압축
+		// compressedBody := compressGzip(body)
+		// body = compressedBody
+		headers = append(headers, "Content-Encoding: gzip")
+	}
+
+	if contentType != ContentTypeNone {
+		headers = append(headers, fmt.Sprintf("Content-Type: %s", contentType.String()))
+	}
+
+	if body != "" {
+		headers = append(headers, fmt.Sprintf("Content-Length: %d", len(body)))
+	}
+
+	// 응답 구성
+	response := status + "\r\n"
+	if len(headers) > 0 {
+		response += strings.Join(headers, "\r\n") + "\r\n"
+	}
+	response += "\r\n"
+
+	if body != "" {
+		response += body
+	}
+
+	return response
+}
+
 // routeRequest는 경로에 따라 적절한 HTTP 응답을 반환합니다
 func routeRequest(request string) string {
 	method := parseRequestMethod(request)
 	path := parseRequestPath(request)
+	headers := parseHeaders(request)
+
+	// gzip 지원 여부 확인
+	useGzip := supportsGzip(headers)
 
 	switch {
 	case path == "/":
-		return "HTTP/1.1 200 OK\r\n\r\n"
+		return handleResponse(200, ContentTypeNone, "", false)
 	case strings.HasPrefix(path, "/echo/"):
 		str := path[6:]
-		return responseEcho(str)
+		return handleResponse(200, ContentTypeTextPlain, str, useGzip)
 	case strings.HasPrefix(path, "/user-agent"):
-		userAgent := parseUserAgent(request)
-		return responseUserAgent(userAgent)
+		userAgent := headers["user-agent"]
+		return handleResponse(200, ContentTypeTextPlain, userAgent, useGzip)
 	case strings.HasPrefix(path, "/files"):
 		filename := path[7:]
-		return responseFile(filename, method, request)
+		return handleFileRequest(filename, method, request, useGzip)
 	default:
-		return "HTTP/1.1 404 Not Found\r\n\r\n"
+		return handleResponse(404, ContentTypeNone, "", false)
 	}
 }
 
-func responseEcho(str string) string {
-	contentLength := len(str)
-	return fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %s\r\n\r\n%s",
-		strconv.Itoa(contentLength), str)
-}
-
-func responseUserAgent(userAgent string) string {
-	contentLength := len(userAgent)
-	return fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
-		contentLength, userAgent)
-}
-
-func responseFile(filename string, method string, request string) string {
+func handleFileRequest(filename string, method string, request string, useGzip bool) string {
 	if method == "GET" {
-		return responseFileGet(filename)
+		return handleFileGet(filename, useGzip)
 	} else if method == "POST" {
 		body := parseRequestBody(request)
-		return responseFilePost(filename, body)
+		return handleFilePost(filename, body)
 	}
-	return ""
+	return handleResponse(404, ContentTypeNone, "", false)
 }
 
-func responseFileGet(filename string) string {
+func handleFileGet(filename string, useGzip bool) string {
 	if filesDirectory == "" {
-		return "HTTP/1.1 404 Not Found\r\n\r\n"
+		return handleResponse(404, ContentTypeNone, "", false)
 	}
 
 	filePath := filepath.Join(filesDirectory, filename)
 
 	fileContent, err := os.ReadFile(filePath)
 	if err != nil {
-		return "HTTP/1.1 404 Not Found\r\n\r\n"
+		return handleResponse(404, ContentTypeNone, "", false)
 	}
 
-	contentLength := len(fileContent)
-	return fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s",
-		contentLength, string(fileContent))
+	// 파일 응답은 gzip을 적용하지 않음 (바이너리 파일일 수 있으므로)
+	return handleResponse(200, ContentTypeApplicationOctetStream, string(fileContent), false)
 }
 
-func responseFilePost(filename string, body string) string {
+func handleFilePost(filename string, body string) string {
 	if filesDirectory == "" {
-		return "HTTP/1.1 404 Not Found\r\n\r\n"
+		return handleResponse(404, ContentTypeNone, "", false)
 	}
 
 	filePath := filepath.Join(filesDirectory, filename)
@@ -202,7 +274,7 @@ func responseFilePost(filename string, body string) string {
 	err := os.WriteFile(filePath, []byte(body), 0644)
 	if err != nil {
 		fmt.Printf("Error writing file: %v\n", err)
-		return "HTTP/1.1 500 Internal Server Error\r\n\r\n"
+		return handleResponse(500, ContentTypeNone, "", false)
 	}
-	return "HTTP/1.1 201 Created\r\n\r\n"
+	return handleResponse(201, ContentTypeNone, "", false)
 }
